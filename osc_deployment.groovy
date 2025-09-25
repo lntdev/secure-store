@@ -1,9 +1,9 @@
-// Jenkins scripted pipeline for building Docker image, pushing to ECR/DockerHub,
-// and deploying to AWS via Terraform (ECS Fargate + ALB + EFS).
+// Scripted pipeline: build Docker image from /var/lib/jenkins/secure-store/app,
+// push to ECR or Docker Hub, then deploy with Terraform from /var/lib/jenkins/secure-store/infra/aws.
 
 node('master') {
 
-  // ---------- Parameters ----------
+  // -------- Parameters shown in the job UI --------
   properties([
     parameters([
       choice(name: 'CLOUD_PROVIDER', choices: ['aws'], description: 'Cloud provider'),
@@ -17,18 +17,30 @@ node('master') {
     ])
   ])
 
-  // ---------- Constants / Env ----------
-  def TF_WORKDIR      = 'infra/aws'
-  def DOCKER_CONTEXT  = 'app'
-  def IMAGE_URI_FILE  = 'IMAGE_URI.env'
-  def IMAGE_URI       = ''
-  def ACCOUNT_ID      = ''
+  // -------- Fixed paths on your Jenkins box --------
+  def BASE_DIR       = '/var/lib/jenkins/secure-store'
+  def DOCKER_CONTEXT = "${BASE_DIR}/app"
+  def TF_WORKDIR     = "${BASE_DIR}/infra/aws"
+  def IMAGE_META_DIR = BASE_DIR
+  def IMAGE_URI_FILE = "${IMAGE_META_DIR}/IMAGE_URI.env"
+  def IMAGE_ACCT_FILE= "${IMAGE_META_DIR}/IMAGE_URI.env.acct"
+
+  def IMAGE_URI = ''
+  def ACCOUNT_ID = ''
 
   try {
 
-    stage('Checkout') {
-      checkout scm
+    stage('Verify Layout') {
+      sh """
+        set -euxo pipefail
+        test -d ${DOCKER_CONTEXT}
+        test -d ${TF_WORKDIR}
+        ls -la ${BASE_DIR}
+      """
     }
+
+    // If your job checks out from SCM into workspace, you can sync to BASE_DIR here (optional).
+    // stage('Sync from SCM to BASE_DIR') { sh "rsync -a --delete ./ ${BASE_DIR}/" }
 
     stage('Docker Build') {
       dir(DOCKER_CONTEXT) {
@@ -46,7 +58,7 @@ node('master') {
             sh """
               set -euxo pipefail
               ACCOUNT_ID=\$(aws sts get-caller-identity --query Account --output text)
-              echo "\$ACCOUNT_ID" > ../${IMAGE_URI_FILE}.acct
+              echo "\$ACCOUNT_ID" > ${IMAGE_ACCT_FILE}
               REPO="\$ACCOUNT_ID.dkr.ecr.${params.AWS_REGION}.amazonaws.com/${params.APP_NAME}"
               aws ecr describe-repositories --repository-names ${params.APP_NAME} >/dev/null 2>&1 || \
                 aws ecr create-repository --repository-name ${params.APP_NAME} >/dev/null
@@ -57,12 +69,11 @@ node('master') {
               docker push "\$REPO:latest"
               echo "IMAGE_URI=\$REPO:${params.VERSION}" > ${IMAGE_URI_FILE}
             """
-            ACCOUNT_ID = readFile("${IMAGE_URI_FILE}.acct").trim()
+            ACCOUNT_ID = readFile(IMAGE_ACCT_FILE).trim()
             IMAGE_URI  = readFile(IMAGE_URI_FILE).trim().split('=')[1]
           }
         }
       } else {
-        // Docker Hub
         withCredentials([usernamePassword(credentialsId: 'docker-hub', usernameVariable: 'DHU', passwordVariable: 'DHP')]) {
           sh """
             set -euxo pipefail
@@ -122,8 +133,8 @@ node('master') {
     }
 
   } finally {
-    archiveArtifacts artifacts: "${IMAGE_URI_FILE}, ${IMAGE_URI_FILE}.acct", allowEmptyArchive: true
+    // Keep a record of which image was deployed
+    archiveArtifacts artifacts: "${IMAGE_URI_FILE}, ${IMAGE_ACCT_FILE}", allowEmptyArchive: true
     sh 'docker image prune -f || true'
   }
 }
-
