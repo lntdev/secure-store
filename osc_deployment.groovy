@@ -1,9 +1,5 @@
-// Scripted pipeline: build Docker image from /var/lib/jenkins/secure-store/app,
-// push to ECR or Docker Hub, then deploy with Terraform from /var/lib/jenkins/secure-store/infra/aws.
-
 node('master') {
 
-  // -------- Parameters shown in the job UI --------
   properties([
     parameters([
       choice(name: 'CLOUD_PROVIDER', choices: ['aws'], description: 'Cloud provider'),
@@ -17,36 +13,35 @@ node('master') {
     ])
   ])
 
-  // -------- Fixed paths on your Jenkins box --------
-  def BASE_DIR       = '/var/lib/jenkins/secure-store'
-  def DOCKER_CONTEXT = "${BASE_DIR}/app"
-  def TF_WORKDIR     = "${BASE_DIR}/infra/aws"
-  def IMAGE_META_DIR = BASE_DIR
-  def IMAGE_URI_FILE = "${IMAGE_META_DIR}/IMAGE_URI.env"
-  def IMAGE_ACCT_FILE= "${IMAGE_META_DIR}/IMAGE_URI.env.acct"
+  // fixed paths
+  def BASE_DIR        = '/var/lib/jenkins/secure-store'
+  def DOCKER_CONTEXT  = "${BASE_DIR}/app"
+  def TF_WORKDIR      = "${BASE_DIR}/infra/aws"
+  def IMAGE_URI_FILE  = "${BASE_DIR}/IMAGE_URI.env"
+  def IMAGE_ACCT_FILE = "${BASE_DIR}/IMAGE_URI.env.acct"
+
+  // use sudo for docker
+  def DOCKER = 'sudo docker'
 
   def IMAGE_URI = ''
   def ACCOUNT_ID = ''
 
   try {
-
     stage('Verify Layout') {
       sh """
         set -euxo pipefail
         test -d ${DOCKER_CONTEXT}
         test -d ${TF_WORKDIR}
         ls -la ${BASE_DIR}
+        ${DOCKER} version
       """
     }
-
-    // If your job checks out from SCM into workspace, you can sync to BASE_DIR here (optional).
-    // stage('Sync from SCM to BASE_DIR') { sh "rsync -a --delete ./ ${BASE_DIR}/" }
 
     stage('Docker Build') {
       dir(DOCKER_CONTEXT) {
         sh """
           set -euxo pipefail
-          docker build --no-cache -t ${params.APP_NAME}:build-${params.VERSION} .
+          ${DOCKER} build --no-cache -t ${params.APP_NAME}:build-${params.VERSION} .
         """
       }
     }
@@ -62,11 +57,11 @@ node('master') {
               REPO="\$ACCOUNT_ID.dkr.ecr.${params.AWS_REGION}.amazonaws.com/${params.APP_NAME}"
               aws ecr describe-repositories --repository-names ${params.APP_NAME} >/dev/null 2>&1 || \
                 aws ecr create-repository --repository-name ${params.APP_NAME} >/dev/null
-              aws ecr get-login-password --region ${params.AWS_REGION} | docker login --username AWS --password-stdin "\$ACCOUNT_ID.dkr.ecr.${params.AWS_REGION}.amazonaws.com"
-              docker tag ${params.APP_NAME}:build-${params.VERSION} "\$REPO:${params.VERSION}"
-              docker tag ${params.APP_NAME}:build-${params.VERSION} "\$REPO:latest"
-              docker push "\$REPO:${params.VERSION}"
-              docker push "\$REPO:latest"
+              aws ecr get-login-password --region ${params.AWS_REGION} | ${DOCKER} login --username AWS --password-stdin "\$ACCOUNT_ID.dkr.ecr.${params.AWS_REGION}.amazonaws.com"
+              ${DOCKER} tag ${params.APP_NAME}:build-${params.VERSION} "\$REPO:${params.VERSION}"
+              ${DOCKER} tag ${params.APP_NAME}:build-${params.VERSION} "\$REPO:latest"
+              ${DOCKER} push "\$REPO:${params.VERSION}"
+              ${DOCKER} push "\$REPO:latest"
               echo "IMAGE_URI=\$REPO:${params.VERSION}" > ${IMAGE_URI_FILE}
             """
             ACCOUNT_ID = readFile(IMAGE_ACCT_FILE).trim()
@@ -77,11 +72,11 @@ node('master') {
         withCredentials([usernamePassword(credentialsId: 'docker-hub', usernameVariable: 'DHU', passwordVariable: 'DHP')]) {
           sh """
             set -euxo pipefail
-            echo "${DHP}" | docker login -u "${DHU}" --password-stdin
-            docker tag ${params.APP_NAME}:build-${params.VERSION} ${params.DOCKERHUB_USER}/${params.APP_NAME}:${params.VERSION}
-            docker tag ${params.APP_NAME}:build-${params.VERSION} ${params.DOCKERHUB_USER}/${params.APP_NAME}:latest
-            docker push ${params.DOCKERHUB_USER}/${params.APP_NAME}:${params.VERSION}
-            docker push ${params.DOCKERHUB_USER}/${params.APP_NAME}:latest
+            echo "${DHP}" | ${DOCKER} login -u "${DHU}" --password-stdin
+            ${DOCKER} tag ${params.APP_NAME}:build-${params.VERSION} ${params.DOCKERHUB_USER}/${params.APP_NAME}:${params.VERSION}
+            ${DOCKER} tag ${params.APP_NAME}:build-${params.VERSION} ${params.DOCKERHUB_USER}/${params.APP_NAME}:latest
+            ${DOCKER} push ${params.DOCKERHUB_USER}/${params.APP_NAME}:${params.VERSION}
+            ${DOCKER} push ${params.DOCKERHUB_USER}/${params.APP_NAME}:latest
             echo "IMAGE_URI=${params.DOCKERHUB_USER}/${params.APP_NAME}:${params.VERSION}" > ${IMAGE_URI_FILE}
           """
           IMAGE_URI = readFile(IMAGE_URI_FILE).trim().split('=')[1]
@@ -133,8 +128,7 @@ node('master') {
     }
 
   } finally {
-    // Keep a record of which image was deployed
     archiveArtifacts artifacts: "${IMAGE_URI_FILE}, ${IMAGE_ACCT_FILE}", allowEmptyArchive: true
-    sh 'docker image prune -f || true'
+    sh "${DOCKER} image prune -f || true"
   }
 }
