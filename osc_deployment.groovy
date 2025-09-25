@@ -8,7 +8,7 @@ node('master') {
       string(name: 'APP_NAME', defaultValue: 'secure-store', description: 'Application name'),
       string(name: 'VERSION', defaultValue: '1.0.0', description: 'Image tag/version'),
       choice(name: 'REGISTRY', choices: ['ecr', 'dockerhub'], description: 'Container registry'),
-      string(name: 'DOCKERHUB_USER', defaultValue: '', description: 'Docker Hub username (if REGISTRY=dockerhub)'),
+      string(name: 'DOCKERHUB_USER', defaultValue: 'manumanakale', description: 'Docker Hub username (if REGISTRY=dockerhub)'),
       password(name: 'SECRET_KEY', defaultValue: 'change-me', description: 'Flask SECRET_KEY (use Jenkins creds in prod)')
     ])
   ])
